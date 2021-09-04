@@ -1,0 +1,6 @@
+[submodule "extern/compute"]
+	path = extern/compute
+	url = https://github.com/boostorg/compute
+[submodule "extern/doctest"]
+	path = extern/doctest
+	url = https://github.com/onqtam/doctest
