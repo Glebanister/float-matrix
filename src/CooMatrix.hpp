@@ -10,73 +10,91 @@
 #include <ostream>
 #include <istream>
 
+#include <boost/compute/algorithm/sort.hpp>
+#include <boost/compute/algorithm/merge.hpp>
+#include <boost/compute/algorithm/reduce_by_key.hpp>
+
 #include "Utility.hpp"
 
+#define BOOST_COMPUTE_FUNCTION_CUSTOM(return_type, name, arguments, actual_arguments, ...) \
+    ::boost::compute::function<return_type arguments> name = \
+    ::boost::compute::detail::make_function_impl<return_type arguments>( \
+            #name, #actual_arguments, #__VA_ARGS__ \
+        )
+
 namespace floatMatrix {
+    namespace cell {
+        using Cell = boost::compute::float4_;
+
+        template <typename T>
+        static Cell make(std::size_t row, std::size_t col, T data) {
+            return {
+                    static_cast<float>(row),
+                    static_cast<float>(col),
+                    static_cast<float>(data),
+                    0.f
+            };
+        }
+
+        static std::size_t row(const Cell& cell) {
+            return static_cast<std::size_t>(cell[0]);
+        }
+
+        static std::size_t col(const Cell& cell) {
+            return static_cast<std::size_t>(cell[1]);
+        }
+
+        template <typename T>
+        static std::size_t data(const Cell& cell) {
+            return static_cast<T>(cell[2]);
+        }
+
+        BOOST_COMPUTE_FUNCTION(
+            bool, compareCellCoords,
+            (boost::compute::float4_ a, boost::compute::float4_ b), {
+                if (a[0] == b[0]) {
+                    return a[1] < b[1];
+                }
+                return a[0] < b[1];
+            }
+        );
+
+        BOOST_COMPUTE_FUNCTION(
+            boost::compute::float4_, reduceSameCells,
+            (boost::compute::float4_ a, boost::compute::float4_ b), {
+                return (float4)(a[0], a[1], a[2] + b[2], 0.f);
+            }
+        );
+
+        BOOST_COMPUTE_FUNCTION(
+            bool, equalCellCoords,
+            (boost::compute::float4_ a, boost::compute::float4_ b), {
+                return a[0] == b[0] && a[1] == b[1];
+            }
+        );
+    }
+
     template <typename T>
     class CooMatrix {
     public:
-        struct Coord {
-            std::size_t row, col;
-        };
+        template <typename E>
+        using BcVector = boost::compute::vector<E>;
+        using CommandQueue = boost::compute::command_queue;
+        using Cell = cell::Cell;
 
-        struct CoordCell {
-            Coord crd;
-            T data;
-        };
+        class DeviceCells : boost::compute::vector<Cell> {
+        public:
+            explicit DeviceCells(std::size_t size, CommandQueue& queue)
+                    : BcVector<cell::Cell>(size, queue.get_context()) {}
 
-        struct Compressed {
-            std::vector<std::size_t> row, col;
-            std::vector<T> data;
+            using BcVector<Cell>::begin;
+            using BcVector<Cell>::end;
+            using BcVector<Cell>::size;
+            using BcVector<Cell>::resize;
+            using BcVector<Cell>::operator[];
 
-            Compressed& sort() {
-                std::vector<CoordCell> coordData(data.size());
-                for (std::size_t i = 0; i < coordData.size(); ++i) {
-                    coordData[i] = {{row[i], col[i]}, data[i]};
-                }
-                std::sort(coordData.begin(), coordData.end(), [](const CoordCell& a, const CoordCell& b) {
-                    return a.data < b.data;
-                });
-                for (std::size_t i = 0; i < coordData.size(); ++i) {
-                    row[i] = coordData[i].crd.row;
-                    col[i] = coordData[i].crd.col;
-                    data[i] = coordData[i].data;
-                }
-                return *this;
-            }
-
-            friend std::ostream& operator<<(std::ostream& os, const Compressed& comp) {
-                os << comp.data.size() << '\n';
-                for (std::size_t r : comp.row) {
-                    os << r << ' ';
-                }
-                os << '\n';
-                for (std::size_t c : comp.col) {
-                    os << c << ' ';
-                }
-                os << '\n';
-                for (const T& d : comp.data) {
-                    os << d << ' ';
-                }
-                return os;
-            }
-
-            friend std::istream& operator>>(std::istream& is, typename CooMatrix<T>::Compressed& comp) {
-                std::size_t elems;
-                is >> elems;
-                comp.data.resize(elems);
-                comp.row.resize(elems);
-                comp.col.resize(elems);
-                for (std::size_t i = 0; i < elems; ++i) {
-                    is >> comp.row[i];
-                }
-                for (std::size_t i = 0; i < elems; ++i) {
-                    is >> comp.col[i];
-                }
-                for (std::size_t i = 0; i < elems; ++i) {
-                    is >> comp.data[i];
-                }
-                return is;
+            void sortOnDevice(CommandQueue& queue = boost::compute::system::default_queue()) {
+                boost::compute::sort(begin(), end(), cell::compareCellCoords, queue);
             }
         };
 
@@ -88,16 +106,15 @@ namespace floatMatrix {
     public:
         CooMatrix() = default;
 
-        explicit CooMatrix(const std::vector<CoordCell>& elems) {
-            for (std::size_t elemI = 0; elemI < elems.size(); ++elemI) {
-                auto[crd, data] = elems[elemI];
-                matrix_[crd.row][crd.col] = data;
+        explicit CooMatrix(const DeviceCells& cells) {
+            for (const auto& cell : cells) {
+                matrix_[cell::row(cell)][cell::col(cell)] = cell::data<T>(cell);
             }
         }
 
-        explicit CooMatrix(const Compressed& compressed) {
-            for (std::size_t i = 0; i < compressed.data.size(); ++i) {
-                matrix_[compressed.row[i]][compressed.col[i]] = compressed.data[i];
+        explicit CooMatrix(const std::vector<Cell>& cells) {
+            for (const auto& cell : cells) {
+                matrix_[cell::row(cell)][cell::col(cell)] = cell::data<T>(cell);
             }
         }
 
@@ -122,7 +139,7 @@ namespace floatMatrix {
             matrix_.clear();
         }
 
-        CooMatrix operator+=(const CooMatrix& other) {
+        CooMatrix& add(const CooMatrix& other) {
             for (const auto&[rowId, row] : other.matrix_) {
                 for (const auto&[colId, value] : row) {
                     matrix_[rowId][colId] += value;
@@ -134,19 +151,50 @@ namespace floatMatrix {
             return *this;
         }
 
-        Compressed toCompressed() const {
-            Compressed compressed;
+        CooMatrix& add(const CooMatrix& other, boost::compute::command_queue& queue) {
+            DeviceCells thisCells = toDeviceCells(queue);
+            DeviceCells otherCells = other.toDeviceCells(queue);
+            thisCells.sortOnDevice(queue);
+            otherCells.sortOnDevice(queue);
+            DeviceCells merged(thisCells.size() + otherCells.size(), queue);
+
+            boost::compute::merge(
+                    thisCells.begin(), thisCells.end(),
+                    otherCells.begin(), otherCells.end(),
+                    merged.begin(),
+                    cell::compareCellCoords,
+                    queue
+            );
+
+            DeviceCells reducedValues(merged.size(), queue);
+            boost::compute::reduce_by_key(
+                    merged.begin(), merged.end(), merged.begin(), // inputs
+                    boost::compute::discard_iterator(), reducedValues.begin(), // outputs
+                    cell::reduceSameCells, // reduce function
+                    cell::equalCellCoords, // compare function
+                    queue
+            );
+            return *this = CooMatrix(reducedValues);
+        }
+
+        [[nodiscard]] std::vector<Cell> toCellsList() const {
+            std::vector<Cell> cells;
             for (const auto&[rowId, row] : matrix_) {
                 for (const auto&[colId, value] : row) {
                     if (value == ZERO) {
                         continue;
                     }
-                    compressed.row.push_back(rowId);
-                    compressed.col.push_back(colId);
-                    compressed.data.push_back(value);
+                    cells.push_back(cell::make<T>(rowId, colId, value));
                 }
             }
-            return compressed;
+            return cells;
+        }
+
+        DeviceCells toDeviceCells(CommandQueue& queue) const {
+            std::vector<Cell> cells = toCellsList();
+            DeviceCells deviceCells(cells.size(), queue);
+            boost::compute::copy(cells.begin(), cells.end(), deviceCells.begin(), queue);
+            return deviceCells;
         }
 
         bool operator==(const CooMatrix& other) const {
@@ -154,21 +202,34 @@ namespace floatMatrix {
         }
 
         friend std::ostream& operator<<(std::ostream& os, const CooMatrix<T>& comp) {
-            os << comp.toCompressed() << '\n';
+            std::vector<Cell> cells = comp.toCellsList();
+            os << cells.size() << '\n';
+            for (const Cell& cell : cells) {
+                os << cell::row(cell) << ' ';
+                os << cell::row(cell) << ' ';
+                os << cell::data<T>(cell) << ' ';
+            }
             return os;
         }
 
         friend std::istream& operator>>(std::istream& is, CooMatrix<T>& comp) {
-            Compressed compressed;
-            is >> compressed;
-            comp = CooMatrix(compressed);
+            std::size_t elems;
+            is >> elems;
+            std::unordered_map<std::size_t, Row> rows(elems);
+            for (std::size_t i = 0; i < elems; ++i) {
+                std::size_t row, col;
+                T data;
+                is >> row >> col >> data;
+                rows[row][col] = data;
+            }
+            comp.matrix_ = rows;
             return is;
         }
 
     private:
         bool isEqSubset(const CooMatrix& other) const {
-            for (const auto& [rowId, row] : matrix_) {
-                for (const auto& [colId, value] : row) {
+            for (const auto&[rowId, row] : matrix_) {
+                for (const auto&[colId, value] : row) {
                     if (!utility::isEq(other.get(rowId, colId), value)) {
                         return false;
                     }
