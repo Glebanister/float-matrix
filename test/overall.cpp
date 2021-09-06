@@ -20,12 +20,12 @@ namespace floatMatrix {
             using floatMatrix::utility::isEq;
 
             FloatMatrix mtx(DeviceCells{
-                Cell{0, 0, 1.0},
-                Cell{1, 4, 6.0},
-                Cell{2, 3, 0.0},
-                Cell{8, 0, 9.0},
-                Cell{3, 1, 1.1},
-                Cell{4, 2, 13.4},
+                {0, 0, 1.0},
+                {1, 4, 6.0},
+                {2, 3, 0.0},
+                {8, 0, 9.0},
+                {3, 1, 1.1},
+                {4, 2, 13.4},
             });
             std::stringstream ss;
             ss << mtx;
