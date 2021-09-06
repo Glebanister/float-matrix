@@ -20,6 +20,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+    
+    - name: Install Boost
+      run: apt install libboost-all-dev
+      
+    - name: Install OpenCL
+      run: apt install ocl-icd-opencl-dev
 
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
