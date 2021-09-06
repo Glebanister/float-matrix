@@ -16,11 +16,9 @@ namespace floatMatrix {
 
     TEST_SUITE("CooMatrixOverall") {
 
-        bool eqFloat(float a, float b) {
-            return std::abs(a - b) <= 1e-1;
-        }
-
         TEST_CASE("Serialize & Deserialize") {
+            using floatMatrix::utility::isEq;
+
             FloatMatrix mtx(DeviceCells{
                 Cell{0, 0, 1.0},
                 Cell{1, 4, 6.0},
@@ -33,13 +31,13 @@ namespace floatMatrix {
             ss << mtx;
             FloatMatrix deserialized;
             ss >> deserialized;
-            CHECK(eqFloat(deserialized.get(0, 0), 1.0));
-            CHECK(eqFloat(deserialized.get(1, 4), 6.0));
-            CHECK(eqFloat(deserialized.get(2, 3), 0.0));
-            CHECK(eqFloat(deserialized.get(6, 7), 0.0));
-            CHECK(eqFloat(deserialized.get(8, 0), 9.0));
-            CHECK(eqFloat(deserialized.get(3, 1), 1.1));
-            CHECK(eqFloat(deserialized.get(4, 2), 13.4));
+            CHECK(isEq(deserialized.get(0, 0), 1.f));
+            CHECK(isEq(deserialized.get(1, 4), 6.f));
+            CHECK(isEq(deserialized.get(2, 3), 0.f));
+            CHECK(isEq(deserialized.get(6, 7), 0.f));
+            CHECK(isEq(deserialized.get(8, 0), 9.f));
+            CHECK(isEq(deserialized.get(3, 1), 1.1f));
+            CHECK(isEq(deserialized.get(4, 2), 13.4f));
         }
 
         TEST_CASE("Simple Addition") {
@@ -52,8 +50,8 @@ namespace floatMatrix {
                 Cell{1, 1, 5.5},
                 Cell{1, 2, 6.6},
 
-                Cell{2, 0, 7.7},
-                Cell{2, 1, 8.8},
+                Cell{2, 0, 8.0},
+                Cell{2, 1, 8.0},
                 Cell{2, 2, 9.9},
             });
 
@@ -66,8 +64,8 @@ namespace floatMatrix {
                 Cell{1, 1, 50.5},
                 Cell{1, 2, 60.6},
 
-                Cell{2, 0, 70.7},
-                Cell{2, 1, 80.8},
+                Cell{2, 0, 70.0},
+                Cell{2, 1, 80.0},
                 Cell{2, 2, 90.9},
             });
 
@@ -80,8 +78,8 @@ namespace floatMatrix {
                 Cell{1, 1, 56.0},
                 Cell{1, 2, 67.2},
 
-                Cell{2, 0, 78.4},
-                Cell{2, 1, 89.6},
+                Cell{2, 0, 78.0},
+                Cell{2, 1, 88.0},
                 Cell{2, 2, 100.8},
             });
 

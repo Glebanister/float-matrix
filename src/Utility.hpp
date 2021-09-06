@@ -6,7 +6,7 @@
 #define FLOAT_MATRIX_UTILITY_HPP
 
 namespace floatMatrix::utility {
-    static constexpr float FLOAT_EPS = 1e-7;
+    static constexpr float FLOAT_EPS = 1e-5;
 
     template <typename T>
     inline bool isEq(const T& a, const T& b) {
