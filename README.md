@@ -1,3 +1,5 @@
+[![CMake](https://github.com/Glebanister/float-matrix/actions/workflows/cmake.yml/badge.svg)](https://github.com/Glebanister/float-matrix/actions/workflows/cmake.yml)
+
 # Float matrix addition
 
 Application for JetBrains Research autumn project.
