@@ -8,9 +8,9 @@ add_subdirectory(extern/compute)
 
 set(TEST test-${CMAKE_PROJECT_NAME})
 set(TEST_SRCS
-    src/main.cpp
-#    test/overall.cpp
-#    test/stress.cpp
+    test/test.cpp
+    test/overall.cpp
+    test/stress.cpp
 )
 
 add_executable(${TEST} ${TEST_SRCS})

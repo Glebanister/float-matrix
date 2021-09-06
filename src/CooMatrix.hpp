@@ -9,94 +9,56 @@
 #include <vector>
 #include <ostream>
 #include <istream>
+#include <algorithm>
 
 #include <boost/compute/algorithm/sort.hpp>
 #include <boost/compute/algorithm/merge.hpp>
 #include <boost/compute/algorithm/reduce_by_key.hpp>
+#include <boost/compute/types/struct.hpp>
 
 #include "Utility.hpp"
 
-#define BOOST_COMPUTE_FUNCTION_CUSTOM(return_type, name, arguments, actual_arguments, ...) \
-    ::boost::compute::function<return_type arguments> name = \
-    ::boost::compute::detail::make_function_impl<return_type arguments>( \
-            #name, #actual_arguments, #__VA_ARGS__ \
-        )
-
 namespace floatMatrix {
+    using T = float;
+
     namespace cell {
-        using Cell = boost::compute::float4_;
+        struct Cell {
+            int row;
+            int col;
+            float data;
+        };
 
-        template <typename T>
-        static Cell make(std::size_t row, std::size_t col, T data) {
-            return {
-                    static_cast<float>(row),
-                    static_cast<float>(col),
-                    static_cast<float>(data),
-                    0.f
-            };
-        }
-
-        static std::size_t row(const Cell& cell) {
-            return static_cast<std::size_t>(cell[0]);
-        }
-
-        static std::size_t col(const Cell& cell) {
-            return static_cast<std::size_t>(cell[1]);
-        }
-
-        template <typename T>
-        static std::size_t data(const Cell& cell) {
-            return static_cast<T>(cell[2]);
-        }
-
-        BOOST_COMPUTE_FUNCTION(
-            bool, compareCellCoords,
-            (boost::compute::float4_ a, boost::compute::float4_ b), {
-                if (a[0] == b[0]) {
-                    return a[1] < b[1];
+        static inline BOOST_COMPUTE_FUNCTION(
+                bool, compareCellCoords,
+                (Cell a, Cell b), {
+                    if (a.row == b.row) {
+                        return a.col < b.col;
+                    }
+                    return a.row < b.row;
                 }
-                return a[0] < b[1];
-            }
         );
 
-        BOOST_COMPUTE_FUNCTION(
-            boost::compute::float4_, reduceSameCells,
-            (boost::compute::float4_ a, boost::compute::float4_ b), {
-                return (float4)(a[0], a[1], a[2] + b[2], 0.f);
-            }
+        static inline BOOST_COMPUTE_FUNCTION(
+                Cell, reduceSameCells,
+                (Cell a, Cell b), {
+                    Cell reduced = {.row = a.row, .col = a.col, .data = a.data + b.data};
+                    return reduced;
+                }
         );
 
-        BOOST_COMPUTE_FUNCTION(
-            bool, equalCellCoords,
-            (boost::compute::float4_ a, boost::compute::float4_ b), {
-                return a[0] == b[0] && a[1] == b[1];
-            }
+        static inline BOOST_COMPUTE_FUNCTION(
+                bool, equalCellCoords,
+                (Cell a, Cell b), {
+                    return a.col == b.col && a.row == b.row;
+                }
         );
     }
 
-    template <typename T>
     class CooMatrix {
     public:
-        template <typename E>
-        using BcVector = boost::compute::vector<E>;
         using CommandQueue = boost::compute::command_queue;
         using Cell = cell::Cell;
-
-        class DeviceCells : boost::compute::vector<Cell> {
-        public:
-            explicit DeviceCells(std::size_t size, CommandQueue& queue)
-                    : BcVector<cell::Cell>(size, queue.get_context()) {}
-
-            using BcVector<Cell>::begin;
-            using BcVector<Cell>::end;
-            using BcVector<Cell>::size;
-            using BcVector<Cell>::resize;
-            using BcVector<Cell>::operator[];
-
-            void sortOnDevice(CommandQueue& queue = boost::compute::system::default_queue()) {
-                boost::compute::sort(begin(), end(), cell::compareCellCoords, queue);
-            }
-        };
+        using DeviceCells = boost::compute::vector<Cell>;
 
         static constexpr T ZERO = static_cast<T>(0);
 
@@ -107,14 +69,22 @@ namespace floatMatrix {
         CooMatrix() = default;
 
         explicit CooMatrix(const DeviceCells& cells) {
-            for (const auto& cell : cells) {
-                matrix_[cell::row(cell)][cell::col(cell)] = cell::data<T>(cell);
+            for (Cell cell : cells) {
+                matrix_[cell.row][cell.col] = cell.data;
+            }
+        }
+
+        template <typename Iterator>
+        explicit CooMatrix(Iterator begin, Iterator end, CommandQueue queue) {
+            for (auto it = begin; it < end; ++it) {
+                const auto& cell = it.read(queue);
+                matrix_[cell.row][cell.col] = cell.data;
             }
         }
 
         explicit CooMatrix(const std::vector<Cell>& cells) {
             for (const auto& cell : cells) {
-                matrix_[cell::row(cell)][cell::col(cell)] = cell::data<T>(cell);
+                matrix_[cell.row][cell.col] = cell.data;
             }
         }
 
@@ -122,7 +92,7 @@ namespace floatMatrix {
             matrix_[row][col] = value;
         }
 
-        T get(std::size_t rowId, std::size_t colId) const noexcept {
+        [[nodiscard]] T get(std::size_t rowId, std::size_t colId) const noexcept {
             auto rowIt = matrix_.find(rowId);
             if (rowIt == matrix_.cend()) {
                 return ZERO;
@@ -154,9 +124,9 @@ namespace floatMatrix {
         CooMatrix& add(const CooMatrix& other, boost::compute::command_queue& queue) {
             DeviceCells thisCells = toDeviceCells(queue);
             DeviceCells otherCells = other.toDeviceCells(queue);
-            thisCells.sortOnDevice(queue);
-            otherCells.sortOnDevice(queue);
-            DeviceCells merged(thisCells.size() + otherCells.size(), queue);
+            boost::compute::sort(thisCells.begin(), thisCells.end(), cell::compareCellCoords, queue);
+            boost::compute::sort(otherCells.begin(), otherCells.end(), cell::compareCellCoords, queue);
+            DeviceCells merged(thisCells.size() + otherCells.size(), queue.get_context());
 
             boost::compute::merge(
                     thisCells.begin(), thisCells.end(),
@@ -166,15 +136,17 @@ namespace floatMatrix {
                     queue
             );
 
-            DeviceCells reducedValues(merged.size(), queue);
-            boost::compute::reduce_by_key(
-                    merged.begin(), merged.end(), merged.begin(), // inputs
-                    boost::compute::discard_iterator(), reducedValues.begin(), // outputs
-                    cell::reduceSameCells, // reduce function
-                    cell::equalCellCoords, // compare function
+            DeviceCells reducedValues(merged.size(), queue.get_context());
+            DeviceCells reducedKeys(merged.size(), queue.get_context());
+            auto [keysEnd, valuesEnd] = boost::compute::reduce_by_key(
+                    merged.begin(), merged.end(), merged.begin(),
+                    reducedKeys.begin(), reducedValues.begin(),
+                    cell::reduceSameCells,
+                    cell::equalCellCoords,
                     queue
             );
-            return *this = CooMatrix(reducedValues);
+
+            return *this = CooMatrix(reducedValues.begin(), valuesEnd, queue);
         }
 
         [[nodiscard]] std::vector<Cell> toCellsList() const {
@@ -184,7 +156,7 @@ namespace floatMatrix {
                     if (value == ZERO) {
                         continue;
                     }
-                    cells.push_back(cell::make<T>(rowId, colId, value));
+                    cells.push_back({static_cast<int>(rowId), static_cast<int>(colId), value});
                 }
             }
             return cells;
@@ -192,7 +164,7 @@ namespace floatMatrix {
 
         DeviceCells toDeviceCells(CommandQueue& queue) const {
             std::vector<Cell> cells = toCellsList();
-            DeviceCells deviceCells(cells.size(), queue);
+            DeviceCells deviceCells(cells.size(), queue.get_context());
             boost::compute::copy(cells.begin(), cells.end(), deviceCells.begin(), queue);
             return deviceCells;
         }
@@ -201,18 +173,18 @@ namespace floatMatrix {
             return isEqSubset(other) && other.isEqSubset(*this);
         }
 
-        friend std::ostream& operator<<(std::ostream& os, const CooMatrix<T>& comp) {
+        friend std::ostream& operator<<(std::ostream& os, const CooMatrix& comp) {
             std::vector<Cell> cells = comp.toCellsList();
             os << cells.size() << '\n';
             for (const Cell& cell : cells) {
-                os << cell::row(cell) << ' ';
-                os << cell::row(cell) << ' ';
-                os << cell::data<T>(cell) << ' ';
+                os << cell.row << ' ';
+                os << cell.col << ' ';
+                os << cell.data << ' ';
             }
             return os;
         }
 
-        friend std::istream& operator>>(std::istream& is, CooMatrix<T>& comp) {
+        friend std::istream& operator>>(std::istream& is, CooMatrix& comp) {
             std::size_t elems;
             is >> elems;
             std::unordered_map<std::size_t, Row> rows(elems);
@@ -227,10 +199,11 @@ namespace floatMatrix {
         }
 
     private:
-        bool isEqSubset(const CooMatrix& other) const {
+        [[nodiscard]] bool isEqSubset(const CooMatrix& other) const {
             for (const auto&[rowId, row] : matrix_) {
                 for (const auto&[colId, value] : row) {
                     if (!utility::isEq(other.get(rowId, colId), value)) {
+                        std::cerr << "Row: " << rowId << ' ' << "Col: " << colId << std::endl;
                         return false;
                     }
                 }
@@ -241,5 +214,7 @@ namespace floatMatrix {
         std::unordered_map<std::size_t, Row> matrix_;
     };
 }
+
+BOOST_COMPUTE_ADAPT_STRUCT(floatMatrix::cell::Cell, Cell, (row, col, data));
 
 #endif //FLOAT_MATRIX_COOMATRIX_HPP
